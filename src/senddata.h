@@ -1,49 +1,27 @@
-// Copyright 2022 @HimankChaudhary
-//
-// Author      : Himank Chaudhary
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-#include <string>
 #ifndef SENDDATA_H_
 #define SENDDATA_H_
 
-#include <fstream>
+#include <cstddef>
+#include <ctime>
+#include <string>
 #include <sys/types.h>
 
-using namespace std;
-
+#include "../src/parse.h"
 
 class SendData
 {
-	public:
-		//ifstream::pos_type size;
-		//SendData();
-		void sendData(clientInfo );
-		void fileRequestedData(clientInfo );
-		void requestPrint(clientInfo );
-		void generatingLog(clientInfo );
-		void listingDir(clientInfo );
-		void displaylog(clientInfo c);
-		//bool sortDirectory(const string& str1, const string& str2);
+public:
+	void sendData(clientInfo c);
+	void generatingLog(clientInfo c);
+	void listingDir(clientInfo c);
+	void displaylog(clientInfo c);
 
-		//void sendDataHTML(clientInfo);
-
-
-		//static void request_helper();
-
-
+private:
+	bool sendAll(int socket, const char *data, size_t size);
+	bool sendAll(int socket, const std::string& data);
+	std::string buildHeader(const clientInfo& c, int statusCode, const std::string& reason, size_t contentLength);
+	std::string contentTypeFor(const std::string& filename);
+	std::string httpDate(time_t value);
 };
 
-
-#endif /* SCHEDULING_H_ */
+#endif /* SENDDATA_H_ */

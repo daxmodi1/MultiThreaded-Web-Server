@@ -1,278 +1,284 @@
-// Copyright 2022 @HimankChaudhary
-//
-// Author      : Himank Chaudhary
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-#include <iostream>
-#include <stdio.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netdb.h>
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <fstream>
-#include <time.h>
-#include <pthread.h>
-#include <sys/stat.h>
-#include <sys/fcntl.h>
-#include "../src/myhttpd.h"
 #include "../src/parse.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cerrno>
+#include <chrono>
+#include <cstring>
+#include <ctime>
+#include <mutex>
+#include <sstream>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <thread>
+#include <unistd.h>
+#include <vector>
+
+#include "../src/myhttpd.h"
 #include "../src/senddata.h"
-#include <dirent.h>
-#include<algorithm>
 
-
-using namespace std;
-
-// This function have the current client structure, this function will parse the request and fill the fields
-void  Parse::parseRequest(clientIdentity c_id)
+namespace
 {
-	int i=1;
-	int recvbytes=0;
-	char buffer[1024];
-	clientInfo cInfo;
-
-	char *p,*pbuffer;
-
-	fcntl( c_id.acceptId, O_NONBLOCK, 0 );
-	
-	if((recvbytes = (recv(c_id.acceptId, buffer, sizeof(buffer),0))) == -1)
-		perror("Receive:");
-	buffer[recvbytes] = '\0';
-	string tofetchfline(buffer);
-	
-	int current = 0;
-	int next = tofetchfline.find_first_of("\r\n", current );
-	if(next < 0) {
-		write(cInfo.r_acceptid,"Error: Bad Request, Retry",25);
-		close (cInfo.r_acceptid);
-	} else {
-		cInfo.r_firstline = tofetchfline.substr( current, next - current);
-		string parseWord[3];
-		pbuffer = new char[cInfo.r_firstline.size() + 1];
-		std::copy(cInfo.r_firstline.begin(), cInfo.r_firstline.end(), pbuffer);
-		pbuffer[cInfo.r_firstline.size()] = '\0';
-
-		p=strtok (pbuffer," /");
-		parseWord[0].assign(p);
-		while (i < 3) {
-			  p=strtok(NULL," ");
-			  parseWord[i].assign(p);
-			  i++;
-		}
-
-		cInfo.r_acceptid = c_id.acceptId;
-		cInfo.r_portno = c_id.portno;
-		cInfo.r_ip = c_id.ip;
-		cInfo.r_time = c_id.requesttime;
-		cInfo.r_type = parseWord[0];
-		cInfo.r_filename = parseWord[1];
-		
-		int ii = cInfo.r_filename.find_first_of("/",0);
-		int jj = cInfo.r_filename.find_first_of("/",ii+1);
-		if(jj >= 0)
-				cInfo.rootcheck = false;
-		else
-				cInfo.rootcheck = true;
-		cInfo.r_filename = rootdir + cInfo.r_filename;
-		cInfo.r_method = parseWord[2];
-		
-		delete [] pbuffer;
-		pbuffer = NULL;
-		changeFolder(cInfo);
+std::string joinPath(const std::string& base, const std::string& relative)
+{
+	if (relative.empty()) {
+		return base;
 	}
+
+	if (!base.empty() && base[base.size() - 1] == '/') {
+		return base + relative;
+	}
+
+	return base + "/" + relative;
 }
 
-// If tilt is present in the client request then change the folder
+std::string normalizeRequestedPath(std::string path)
+{
+	const std::string querySeparator = "?";
+	const std::string::size_type query = path.find(querySeparator);
+	if (query != std::string::npos) {
+		path.erase(query);
+	}
+
+	while (!path.empty() && path[0] == '/') {
+		path.erase(path.begin());
+	}
+
+	std::vector<std::string> parts;
+	std::stringstream stream(path);
+	std::string part;
+	while (std::getline(stream, part, '/')) {
+		if (part.empty() || part == ".") {
+			continue;
+		}
+		if (part == "..") {
+			return "";
+		}
+		parts.push_back(part);
+	}
+
+	std::string normalized;
+	for (size_t i = 0; i < parts.size(); ++i) {
+		if (i != 0) {
+			normalized += "/";
+		}
+		normalized += parts[i];
+	}
+
+	return normalized;
+}
+
+int fileSize(const std::string& filename)
+{
+	struct stat fileInfo;
+	if (stat(filename.c_str(), &fileInfo) == -1 || !S_ISREG(fileInfo.st_mode)) {
+		return 0;
+	}
+
+	return static_cast<int>(fileInfo.st_size);
+}
+
+std::string currentTimeString()
+{
+	time_t now = time(NULL);
+	tm *utc = gmtime(&now);
+	char buffer[50] = {};
+
+	if (utc == NULL || strftime(buffer, sizeof(buffer), "%x:%X", utc) == 0) {
+		return "";
+	}
+
+	return std::string(buffer);
+}
+}
+
+void Parse::parseRequest(clientIdentity c_id)
+{
+	std::string request;
+	char buffer[1024];
+
+	while (request.size() < 8192) {
+		const ssize_t bytesRead = recv(c_id.acceptId, buffer, sizeof(buffer), 0);
+		if (bytesRead <= 0) {
+			if (bytesRead < 0) {
+				perror("Receive");
+			}
+			close(c_id.acceptId);
+			return;
+		}
+
+		request.append(buffer, static_cast<size_t>(bytesRead));
+		if (request.find("\r\n\r\n") != std::string::npos || request.find('\n') != std::string::npos) {
+			break;
+		}
+	}
+
+	clientInfo cInfo;
+	cInfo.r_acceptid = c_id.acceptId;
+	cInfo.r_portno = c_id.portno;
+	cInfo.r_ip = c_id.ip;
+	cInfo.r_time = c_id.requesttime;
+
+	const std::string::size_type lineEnd = request.find_first_of("\r\n");
+	if (lineEnd == std::string::npos) {
+		cInfo.r_firstline = request;
+		cInfo.status_code = 400;
+		if (r_daemon) {
+			SendData sender;
+			sender.sendData(cInfo);
+			return;
+		}
+
+		readyQueue(cInfo);
+		return;
+	}
+
+	cInfo.r_firstline = request.substr(0, lineEnd);
+
+	std::istringstream requestLine(cInfo.r_firstline);
+	std::string requestedPath;
+	requestLine >> cInfo.r_type >> requestedPath >> cInfo.r_method;
+
+	if (cInfo.r_type.empty() || requestedPath.empty() || cInfo.r_method.empty()) {
+		cInfo.status_code = 400;
+		if (r_daemon) {
+			SendData sender;
+			sender.sendData(cInfo);
+			return;
+		}
+
+		readyQueue(cInfo);
+		return;
+	}
+
+	const std::string relativePath = normalizeRequestedPath(requestedPath);
+	cInfo.rootcheck = relativePath.find('/') == std::string::npos;
+	cInfo.r_filename = joinPath(rootdir, relativePath);
+
+	changeFolder(cInfo);
+}
+
 void Parse::changeFolder(clientInfo c)
 {
-	int next = c.r_filename.find_first_of("~",0);
-	int size = c.r_filename.size();
-	if(next > 0 && next < size) {
-		int pos = c.r_filename.find_first_of("/",next);
-		string requestfor = c.r_filename.substr(next+1,pos -(next+1));
-		string restString = c.r_filename.substr(pos,c.r_filename.size()-pos);
-		c.r_filename.erase(next,c.r_filename.size());
-		c.r_filename = c.r_filename + requestfor +"/myhttpd" +restString;
+	const std::string::size_type tilde = c.r_filename.find('~');
+	if (tilde != std::string::npos && tilde + 1 < c.r_filename.size()) {
+		const std::string::size_type slash = c.r_filename.find('/', tilde);
+		if (slash != std::string::npos) {
+			const std::string requestFor = c.r_filename.substr(tilde + 1, slash - tilde - 1);
+			const std::string rest = c.r_filename.substr(slash);
+			c.r_filename.erase(tilde);
+			c.r_filename += requestFor + "/myhttpd" + rest;
+		}
 	}
 
 	checkRequest(c);
 }
 
-// if file requested exists or not
-bool Parse::fileExists(char *filename)						
+bool Parse::fileExists(const std::string& filename)
 {
-	struct stat filenamecheck;
-    if (stat(filename, &filenamecheck) != -1)
-       	   	return true;
-    
-	return false;
+	struct stat fileInfo;
+	return stat(filename.c_str(), &fileInfo) != -1 && S_ISREG(fileInfo.st_mode);
 }
 
-// Check type of request
 void Parse::checkRequest(clientInfo cInfo)
 {
-
-	int pos = cInfo.r_filename.find_last_of("/");
-	int next = cInfo.r_filename.find_first_of(".",pos);
-	if(next > 0) {
-		char * fname = new char[cInfo.r_filename.size() + 1];
-		std::copy(cInfo.r_filename.begin(), cInfo.r_filename.end(), fname);
-		fname[cInfo.r_filename.size()] = '\0';
-		ifstream::pos_type size = 0;
-
-		if(fileExists(fname) && cInfo.r_type == "GET") {
-			ifstream file;
-			file.open(fname);
-			if (file.is_open()) {
-				file.seekg (0, ios::end);
-				size = file.tellg();
-			}
-			cInfo.status_file = true;
-			cInfo.r_filesize = (int)size;
-			file.close();
-			delete [] fname;
-			fname = NULL;
-			if(r_daemon) {
-				SendData S;
-				S.sendData(cInfo);
-			} else {
-				readyQueue(cInfo);
-			}
-		} else if(fileExists(fname) && cInfo.r_type == "HEAD") {
-			cInfo.status_file = true;
-			cInfo.r_filesize = 0;
-			delete [] fname;
-			fname = NULL;
-			if(r_daemon) {
-				SendData S;
-				S.sendData(cInfo);
-			} else {
-				readyQueue(cInfo);
-			}
-		} else {
-			delete [] fname;
-			fname = NULL;
-			cInfo.r_filesize = 0;
-			cInfo.status_file = false;
-			if(r_daemon) {
-				SendData S;
-				S.sendData(cInfo);
-			} else {
-				readyQueue(cInfo);
-			}
+	if (cInfo.status_code == 400) {
+		if (r_daemon) {
+			SendData sender;
+			sender.sendData(cInfo);
+			return;
 		}
-	} else {
-		cInfo.r_filesize = 0;
-		cInfo.status_file = false;
-		if(r_daemon) {
-			SendData S;
-			S.sendData(cInfo);
-		} else {
-			readyQueue(cInfo);
-		}
+
+		readyQueue(cInfo);
+		return;
 	}
+
+	std::string method = cInfo.r_type;
+	std::transform(method.begin(), method.end(), method.begin(),
+	               [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+	cInfo.r_type = method;
+
+	if (method != "GET" && method != "HEAD") {
+		cInfo.status_code = 405;
+		if (r_daemon) {
+			SendData sender;
+			sender.sendData(cInfo);
+			return;
+		}
+
+		readyQueue(cInfo);
+		return;
+	}
+
+	cInfo.status_file = fileExists(cInfo.r_filename);
+	cInfo.r_filesize = cInfo.status_file ? fileSize(cInfo.r_filename) : 0;
+
+	if (r_daemon) {
+		SendData sender;
+		sender.sendData(cInfo);
+		return;
+	}
+
+	readyQueue(cInfo);
 }
 
-
-// Sort the request based on file size
 bool sortRequest(const clientInfo& lhs, const clientInfo& rhs)
 {
-  return lhs.r_filesize < rhs.r_filesize;
+	return lhs.r_filesize < rhs.r_filesize;
 }
 
-// Here main thread will put the request in the queue
 void Parse::readyQueue(clientInfo cInfo)
 {
-	pthread_mutex_lock(&rqueue_lock);
-	clientlist.push_back(cInfo);
-	pthread_cond_signal(&rqueue_cond);
-	pthread_mutex_unlock(&rqueue_lock);
+	{
+		std::lock_guard<std::mutex> lock(rqueue_mutex);
+		clientlist.push_back(cInfo);
+	}
+	rqueue_cond.notify_one();
 }
 
-// In this scheduler thread will fetch the request from the queue based on the scheduling policies
 void Parse::popRequest()
 {
-	sleep(r_time);
-	while(1) {
+	std::this_thread::sleep_for(std::chrono::seconds(r_time));
+
+	while (true) {
 		clientInfo c;
-		transform(scheduling.begin(), scheduling.end(),scheduling.begin(),::toupper);
-		if(scheduling =="SJF") {
-			pthread_mutex_lock(&rqueue_lock);
-			
-			while(clientlist.empty())
-				pthread_cond_wait(&rqueue_cond, &rqueue_lock);
-			
-			clientlist.sort(sortRequest);
+		std::string selectedScheduling = scheduling;
+		std::transform(selectedScheduling.begin(), selectedScheduling.end(), selectedScheduling.begin(),
+		               [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+
+		{
+			std::unique_lock<std::mutex> lock(rqueue_mutex);
+			rqueue_cond.wait(lock, [this] { return !clientlist.empty(); });
+
+			if (selectedScheduling == "SJF") {
+				clientlist.sort(sortRequest);
+			}
+
 			c = clientlist.front();
 			clientlist.pop_front();
-			pthread_mutex_unlock(&rqueue_lock);
-		} else {
-			pthread_mutex_lock(&rqueue_lock);
-			while(clientlist.empty())
-				pthread_cond_wait(&rqueue_cond, &rqueue_lock);
-			c = clientlist.front();
-			clientlist.pop_front();
-			pthread_mutex_unlock(&rqueue_lock);
 		}
-		
-		pthread_mutex_lock(&print_lock);
-		requestlist.push_back(c);
-		pthread_cond_signal(&print_cond);
-		pthread_mutex_unlock(&print_lock);
+
+		{
+			std::lock_guard<std::mutex> lock(request_mutex);
+			requestlist.push_back(c);
+		}
+		request_cond.notify_one();
 	}
 }
 
-void *Parse::popRequest_helper(void *c)
-{
-	//Parse *P =(Parse *)c;
-	//P->popRequest();
-	((Parse *)c)->popRequest();
-	//delete P;
-	return NULL;
-}
-
-void *Parse::serveRequest_helper(void *c)
-{
-	Parse *P1 =(Parse *)c;
-	P1->serveRequest();
-	return NULL;
-}
-
-// In this function contionsly threads are acting to serve the client request.
 void Parse::serveRequest()
 {
-	pthread_detach(pthread_self());
-	while(1) {
-		pthread_mutex_lock(&print_lock);
-		
-		while(requestlist.empty())
-				pthread_cond_wait(&print_cond, &print_lock);
-		
-		SendData S;
+	while (true) {
 		clientInfo c;
-		c = requestlist.front();
-		requestlist.pop_front();
-		time_t tim=time(NULL);
-		tm *now=gmtime(&tim);
-		char currtime[50];
-		if (strftime(currtime, 50,"%x:%X", now) == 0)
-				perror("Date Panga");
-		string servetime(currtime);
-		c.r_servetime = servetime;
-		pthread_mutex_unlock(&print_lock);
-		S.sendData(c);
+		{
+			std::unique_lock<std::mutex> lock(request_mutex);
+			request_cond.wait(lock, [this] { return !requestlist.empty(); });
+			c = requestlist.front();
+			requestlist.pop_front();
+		}
+		c.r_servetime = currentTimeString();
+
+		SendData sender;
+		sender.sendData(c);
 	}
 }

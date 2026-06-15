@@ -1,118 +1,121 @@
-// Copyright 2022 @HimankChaudhary
-//
-// Author      : Himank Chaudhary
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-#include <iostream>
-#include <stdio.h>
-#include <string.h>
-#include <sys/types.h>
-#include <netdb.h>
-#include <arpa/inet.h>
-#include <netinet/in.h>
 #include "../src/myserver.h"
-#include "../src/parse.h"
+
+#include <cerrno>
+#include <cstring>
+#include <ctime>
+#include <iostream>
+#include <unistd.h>
+
 #include "../src/myhttpd.h"
+#include "../src/parse.h"
+#include "../src/socket_handle.h"
 
-using namespace std;
-
-// Set Default values
 RunServer::RunServer()
 {
 	memset(&inValue, 0, sizeof(inValue));
 	inValue.ai_family = AF_UNSPEC;
 	inValue.ai_socktype = SOCK_STREAM;
 	inValue.ai_flags = AI_PASSIVE;
-	yes=1;
+	yes = 1;
 }
 
-// Return Port Number
-u_int16_t RunServer::get_port_number(struct sockaddr *s)
+uint16_t RunServer::get_port_number(struct sockaddr *s)
 {
-	if(s->sa_family == AF_INET)
-		return (((struct sockaddr_in  *)s)->sin_port);
-	else
-		return (((struct sockaddr_in6 *)s)->sin6_port);
+	if (s->sa_family == AF_INET) {
+		return ntohs(((struct sockaddr_in *)s)->sin_port);
+	}
+
+	return ntohs(((struct sockaddr_in6 *)s)->sin6_port);
 }
 
-//Return Ip address
-void * RunServer::get_ip_address(sockaddr *s)
+void *RunServer::get_ip_address(sockaddr *s)
 {
-	if(s->sa_family == AF_INET)
+	if (s->sa_family == AF_INET) {
 		return &((sockaddr_in *)s)->sin_addr;
-	else
-		return &((sockaddr_in6 *)s)->sin6_addr;
+	}
+
+	return &((sockaddr_in6 *)s)->sin6_addr;
 }
 
-// This function will create the socket for all the incoming client connections & update the client structure and pass
-// this structure to Parse class
 void RunServer::accept_connection()
 {
-	//struct sockaddr_in serverInfo;
+	SocketHandle listener;
+	const int addressStatus = getaddrinfo(NULL, port.c_str(), &inValue, &serverInfo);
+	if (addressStatus != 0) {
+		std::cerr << "getaddrinfo: " << gai_strerror(addressStatus) << std::endl;
+		return;
+	}
 
-	if (getaddrinfo(NULL, port.c_str(), &inValue, &serverInfo) != 0)
-		    perror("Get Address:");
-
-	for(validInfo = serverInfo; validInfo != NULL; validInfo = validInfo->ai_next) {
-		if((sockId = (socket(validInfo->ai_family, validInfo->ai_socktype,0))) == -1)
-				perror("Socket:");
-		
-		addrlen = sizeof(serverInfo);
-		
-		if (setsockopt(sockId, SOL_SOCKET, SO_REUSEADDR, &yes,sizeof(int)) == -1){
-			perror("setsockopt");
-		    break;
+	for (validInfo = serverInfo; validInfo != NULL; validInfo = validInfo->ai_next) {
+		listener.reset(socket(validInfo->ai_family, validInfo->ai_socktype, validInfo->ai_protocol));
+		sockId = listener.get();
+		if (!listener.valid()) {
+			perror("socket");
+			continue;
 		}
-		
-		if(bind(sockId,validInfo->ai_addr, validInfo->ai_addrlen) == -1)
-				perror("Bind:");
-		
+
+		if (setsockopt(listener.get(), SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == -1) {
+			perror("setsockopt");
+			listener.close();
+			sockId = listener.get();
+			continue;
+		}
+
+		if (bind(listener.get(), validInfo->ai_addr, validInfo->ai_addrlen) == -1) {
+			perror("bind");
+			listener.close();
+			sockId = listener.get();
+			continue;
+		}
+
 		break;
 	}
 
-	// successfully done with bind
-	
-	struct sockaddr_in *ipv4 = (struct sockaddr_in *)validInfo->ai_addr;
-	void *addr;
-	addr = &(ipv4->sin_addr);
-	inet_ntop(validInfo->ai_family,addr, ip, sizeof(ip));
-	freeaddrinfo(serverInfo);
-	if(listen(sockId, MAXCONNECTION) == -1)
-		perror("Listen:");
+	if (validInfo == NULL || !listener.valid()) {
+		std::cerr << "Unable to bind to port " << port << std::endl;
+		freeaddrinfo(serverInfo);
+		return;
+	}
 
-	while(true) {		// Main thread will listen continously 
+	if (listen(listener.get(), MAXCONNECTION) == -1) {
+		perror("listen");
+		freeaddrinfo(serverInfo);
+		listener.close();
+		sockId = listener.get();
+		return;
+	}
+
+	sockId = listener.get();
+	freeaddrinfo(serverInfo);
+
+	while (true) {
 		address = sizeof(clientAddr);
-		
-		if((acceptId = accept(sockId,(struct sockaddr*)&clientAddr,(socklen_t *)&address)) == -1)
-				perror("Accept:");
-		
-		inet_ntop(clientAddr.ss_family,get_ip_address((struct sockaddr *)&clientAddr),ip1, sizeof(ip1));
-		u_int16_t clientport = get_port_number((struct sockaddr *)&(validInfo));
-		time_t tim=time(NULL);
-		tm *now=gmtime(&tim);
-		char currtime[50];
-		
-		if (strftime(currtime, 50,"%x:%X", now) == 0)
-				perror("Date Error");
-		
-		string requesttime(currtime);
+		acceptId = accept(listener.get(), reinterpret_cast<struct sockaddr *>(&clientAddr),
+		                  &address);
+		if (acceptId == -1) {
+			if (errno == EINTR) {
+				continue;
+			}
+			perror("accept");
+			continue;
+		}
+
+		inet_ntop(clientAddr.ss_family, get_ip_address(reinterpret_cast<struct sockaddr *>(&clientAddr)),
+		          ip1, sizeof(ip1));
+
+		time_t now = time(NULL);
+		tm *utc = gmtime(&now);
+		char currentTime[50] = {};
+		if (utc != NULL && strftime(currentTime, sizeof(currentTime), "%x:%X", utc) == 0) {
+			perror("strftime");
+		}
+
 		clientIdentity cid;
 		cid.acceptId = acceptId;
-		string s(ip1);
-		cid.ip=s;
-		cid.portno = clientport;
-		cid.requesttime = requesttime;
+		cid.ip = ip1;
+		cid.portno = get_port_number(reinterpret_cast<struct sockaddr *>(&clientAddr));
+		cid.requesttime = currentTime;
+
 		P->parseRequest(cid);
 	}
 }
