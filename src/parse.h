@@ -1,5 +1,4 @@
-#ifndef PARSE_H_
-#define PARSE_H_
+#pragma once
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -7,10 +6,6 @@
 #include <string>
 #include <vector>
 
-//enum RequestMethod {GET,HEAD,OTHER};
-
-//typedef struct clientInfo;
-//typedef struct clientIdentity;
 struct clientIdentity
 {
 	int acceptId = -1;
@@ -52,4 +47,3 @@ public:
 		void serveRequest();
 		void changeFolder(clientInfo);
 };
-#endif /* PARSE_H_ */

@@ -40,8 +40,12 @@ std::string normalizeRequestedPath(std::string path)
 		path.erase(query);
 	}
 
-	while (!path.empty() && path[0] == '/') {
-		path.erase(path.begin());
+	const std::string::size_type first = path.find_first_not_of('/');
+	if (first == std::string::npos) {
+		return "";
+	}
+	if (first > 0) {
+		path.erase(0, first);
 	}
 
 	std::vector<std::string> parts;
@@ -81,10 +85,10 @@ int fileSize(const std::string& filename)
 std::string currentTimeString()
 {
 	time_t now = time(NULL);
-	tm *utc = gmtime(&now);
+	tm utc = {};
 	char buffer[50] = {};
 
-	if (utc == NULL || strftime(buffer, sizeof(buffer), "%x:%X", utc) == 0) {
+	if (gmtime_r(&now, &utc) == NULL || strftime(buffer, sizeof(buffer), "%x:%X", &utc) == 0) {
 		return "";
 	}
 

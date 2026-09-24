@@ -10,7 +10,7 @@
 #include "../src/parse.h"
 #include "../src/socket_handle.h"
 
-RunServer::RunServer()
+RunServer::RunServer()	
 {
 	memset(&inValue, 0, sizeof(inValue));
 	inValue.ai_family = AF_UNSPEC;
@@ -104,9 +104,9 @@ void RunServer::accept_connection()
 		          ip1, sizeof(ip1));
 
 		time_t now = time(NULL);
-		tm *utc = gmtime(&now);
+		tm utc = {};
 		char currentTime[50] = {};
-		if (utc != NULL && strftime(currentTime, sizeof(currentTime), "%x:%X", utc) == 0) {
+		if (gmtime_r(&now, &utc) != NULL && strftime(currentTime, sizeof(currentTime), "%x:%X", &utc) == 0) {
 			perror("strftime");
 		}
 

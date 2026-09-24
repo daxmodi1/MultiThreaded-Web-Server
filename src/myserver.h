@@ -1,5 +1,4 @@
-#ifndef MYSERVER_H_
-#define MYSERVER_H_
+#pragma once
 
 #ifndef MAXCONNECTION
 #define MAXCONNECTION 1024
@@ -27,5 +26,3 @@ public:
 		uint16_t get_port_number(struct sockaddr *s);
 
 };
-
-#endif /* MYSERVER_H_ */

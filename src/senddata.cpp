@@ -66,10 +66,10 @@ bool SendData::sendAll(int socket, const std::string& data)
 
 std::string SendData::httpDate(time_t value)
 {
-	tm *utc = gmtime(&value);
+	tm utc = {};
 	char buffer[64] = {};
 
-	if (utc == NULL || strftime(buffer, sizeof(buffer), "%a, %d %b %Y %H:%M:%S GMT", utc) == 0) {
+	if (gmtime_r(&value, &utc) == NULL || strftime(buffer, sizeof(buffer), "%a, %d %b %Y %H:%M:%S GMT", &utc) == 0) {
 		return "";
 	}
 
@@ -183,7 +183,7 @@ void SendData::sendData(clientInfo c)
 	}
 }
 
-void SendData::generatingLog(clientInfo c)
+void SendData::generatingLog(const clientInfo& c)
 {
 	std::ofstream logfile(l_file.c_str(), std::ios::app);
 	if (!logfile) {
@@ -195,21 +195,22 @@ void SendData::generatingLog(clientInfo c)
 	        << c.r_firstline << " " << c.status_code << " " << c.r_filesize << std::endl;
 }
 
-void SendData::displaylog(clientInfo c)
+void SendData::displaylog(const clientInfo& c)
 {
 	time_t now = time(NULL);
-	tm *utc = gmtime(&now);
+	tm utc = {};
 	char currentTime[50] = {};
 
-	if (utc != NULL && strftime(currentTime, sizeof(currentTime), "%x:%X", utc) != 0) {
-		c.r_servetime = currentTime;
-	}
+	const std::string serviceTime =
+	    (gmtime_r(&now, &utc) != NULL && strftime(currentTime, sizeof(currentTime), "%x:%X", &utc) != 0)
+	        ? std::string(currentTime)
+	        : c.r_servetime;
 
-	std::cout << c.r_ip << "  [" << c.r_time << "]  [" << c.r_servetime << "]  "
+	std::cout << c.r_ip << "  [" << c.r_time << "]  [" << serviceTime << "]  "
 	          << c.r_firstline << " " << c.status_code << " " << c.r_filesize << std::endl;
 }
 
-void SendData::listingDir(clientInfo c)
+void SendData::listingDir(const clientInfo& c)
 {
 	const std::string::size_type lastSlash = c.r_filename.find_last_of('/');
 	const std::string dir = lastSlash == std::string::npos ? rootdir : c.r_filename.substr(0, lastSlash);

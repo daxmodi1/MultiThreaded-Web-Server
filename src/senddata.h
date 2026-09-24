@@ -12,9 +12,9 @@ class SendData
 {
 public:
 	void sendData(clientInfo c);
-	void generatingLog(clientInfo c);
-	void listingDir(clientInfo c);
-	void displaylog(clientInfo c);
+	void generatingLog(const clientInfo& c);
+	void listingDir(const clientInfo& c);
+	void displaylog(const clientInfo& c);
 
 private:
 	bool sendAll(int socket, const char *data, size_t size);
